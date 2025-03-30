@@ -15,7 +15,7 @@ The datasets consist of 19 columns (in parentheses):
 - responder packets (resp_pkts)
 - originator IP bytes (orig_ip_bytes)
 - responder IP bytes (resp_ip_bytes)
-#### identifying information for the source IP address
+#### SOURCE IP ADDRESS ENRICHED DATA
 - (abuseConfidenceScore) from abuseIPDB
 - (category) derived from Greynoise
 - country code (countryCode)
