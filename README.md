@@ -1,5 +1,7 @@
 # dissertation3
 
+The datasets contain 19 columns of information.
+
 - timestamp (ts)
 - originator IP address (id.orig_h)
 - originator port (id.orig_p)
@@ -13,7 +15,7 @@
 - responder packets (resp_pkts)
 - originator IP bytes (orig_ip_bytes)
 - responder IP bytes (resp_ip_bytes)
-# identifying information for the source IP address
+#### identifying information for the source IP address
 - (abuseConfidenceScore) from abuseIPDB
 - (category) derived from Greynoise
 - country code (countryCode)
