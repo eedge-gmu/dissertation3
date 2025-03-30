@@ -1,0 +1,222 @@
+# This file contains python code to produce and analyze the Zeek connections logs
+
+from zat.log_to_dataframe import LogToDataFrame
+import matplotlib.pyplot as plt 
+import pandas as pd
+from abuseipdb_wrapper import AbuseIPDB
+import plotly.express as px
+import math
+import pickle
+from datetime import datetime
+
+#
+# Build dataset for validation of IP reputation scores 
+# Recreate 5-tuples but with more behavioral data (columns from zeek connection log)
+#
+# log_to_df = LogToDataFrame()
+# zeek_df = pd.concat([log_to_df.create_dataframe(r'baselineattacktraffic/0909conn.00_00_00-00_00_00.log', ts_index=False),log_to_df.create_dataframe(r'baselineattacktraffic/0910conn.00_00_00-00_00_00.log', ts_index=False),log_to_df.create_dataframe(r'baselineattacktraffic/0911conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0912conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0913conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0914conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0915conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0916conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0917conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0918conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0919conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0920conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0921conn.00_00_00-00_00_00.log', ts_index=False), log_to_df.create_dataframe(r'baselineattacktraffic/0922conn.00_00_00-00_00_00.log', ts_index=False)])
+# zeek_df.to_pickle(r'baselineattacktraffic/connections.pkl')
+bl_zeek_df = pd.read_pickle(r'baselineattacktraffic/connections.pkl')
+bl_zeek_df = bl_zeek_df.sort_values(by='ts').reset_index(drop=True)
+unsolicited_zeek_df = bl_zeek_df[(bl_zeek_df['id.resp_h']=='a.b.c.d') & (bl_zeek_df['resp_pkts'] == 0)]
+
+rd_zeek_df = pd.read_pickle(r'redirectattacktraffic/connections.pkl')
+rd_zeek_df = rd_zeek_df.sort_values(by='ts').reset_index(drop=True)
+temp = rd_zeek_df.iloc[(list(map(lambda x: x - 1, rd_zeek_df.index[(rd_zeek_df['id.resp_h'] == '3.88.72.194') & (~rd_zeek_df['id.resp_p'].between(64295, 64297))].tolist())))]
+redirected_zeek_df = temp[(temp['id.resp_h'] == 'a.b.c.d') & (temp['resp_ip_bytes'] != 0)]
+
+API_KEY = '*************************************************************'
+abuse = AbuseIPDB(api_key=API_KEY, db_file='abuseipdb.json')
+abuse.add_ip_list(unsolicited_zeek_df['id.orig_h'].unique().tolist())
+abusedf = pd.DataFrame(abuse.get_db().values())
+
+# Merged the abuse confidence data with datasets
+modabusedf = abusedf[['abuseConfidenceScore', 'ipAddress', 'countryCode', 'domain', 'isp', 'hostnames']]
+modabusedf.rename(columns={'ipAddress': 'id.orig_h'}, inplace=True)
+enriched_unsolicited_zeek_df = unsolicited_zeek_df.merge(modabusedf, how='left')
+enriched_redirected_zeek_df = redirected_zeek_df.merge(modabusedf, how='left')
+
+enriched_unsolicited_5tuple_df = enriched_unsolicited_zeek_df[['ts','id.orig_h','id.orig_p', 'id.resp_h', 'id.resp_p','proto', 'orig_bytes', 'resp_bytes', 'history', 'orig_pkts', 'resp_pkts', 'orig_ip_bytes', 'resp_ip_bytes','abuseConfidenceScore', 'countryCode', 'domain', 'isp', 'hostnames']]
+enriched_redirected_5tuple_df = enriched_redirected_zeek_df[['ts','id.orig_h','id.orig_p', 'id.resp_h', 'id.resp_p','proto', 'orig_bytes', 'resp_bytes', 'history', 'orig_pkts', 'resp_pkts', 'orig_ip_bytes', 'resp_ip_bytes','abuseConfidenceScore', 'countryCode', 'domain', 'isp', 'hostnames']]
+
+enriched_unsolicited_5tuple_df['isp'].fillna("", inplace=True)
+enriched_unsolicited_5tuple_df['domain'].fillna("", inplace=True)
+enriched_unsolicited_5tuple_df['hostnames'] = enriched_unsolicited_5tuple_df['hostnames'].apply(lambda d: d if isinstance(d, list) else [])
+enriched_redirected_5tuple_df['isp'].fillna("", inplace=True)
+enriched_redirected_5tuple_df['domain'].fillna("", inplace=True)
+enriched_redirected_5tuple_df['hostnames'] = enriched_redirected_5tuple_df['hostnames'].apply(lambda d: d if isinstance(d, list) else [])
+
+greynoise_list = list(map(str.casefold,['QuadMetrics', 'Academy for Internet Research', 'ESET', 'RWTH', 'Net Systems Research', 'TurnitinBot', 'Qualys', 'Onyphe', 'IPinfo.io', 'Intrinsec', 'Babbar', 'University of Colorado', 'Open Port Statistics', 'CyberResilience', 'SOCRadar', 'Shodan.io', 'Twitter', 'GPTBot', 'A10 Networks', 'FortifyData', 'BitSight', 'SEMrush', 'DataForSEO ', 'University of California San Diego', 'BinaryEdge.io', 'Detectify', 'University of California Berkeley', 'Inter-University Computation Center', 'Netsecscan', 'Errata Security', 'Stanford University', 'Cortex Xpanse', 'Driftnet', 'Applebot', 'National Cyber Security Centre', 'Caida', 'OpenIntel.nl', 'Security-Research.org', 'SecurityTrails', 'Bytedance', 'Neeva', 'facebook.com', 'Arbor Networks', 'Cambridge Cybercrime Centre', 'Shadowserver ', 'Censys', 'Sogou', 'ServCity', 'Cymru', 'Brandwatch', 'CERT-FR', 'Common Crawl', 'Domainstats', 'CISA ', 'NEKST', 'SEOkicks ', 'DataGrid Surface', 'CyberGreen', 'Alpha Strike Labs', 'Cloud System Networks', 'Pinterest ', 'AWS Security', 'CriminalIP', 'Sharashka', 'AdScore', 'Dataprovider.com', 'fofa.so', 'Ruhr-Universitat Bochum', 'FireEye', 'ANT Lab', 'DomainTools', 'BLEXBot ', 'Rapid7', 'Ampere Innotech', 'CrowdStrike', 'Project25499 ', 'NetCraft', 'University of the Free State', 'Archive.org', 'bufferover.run', 'Qwant', 'Technical University of Munich', 'VeriSign', 'University of Michigan', 'Ahrefs', 'Bit Discovery', 'Rackspace', 'Phenome.ca', 'research-scanner.com', 'Brown University', 'Malware Patrol', 'Georgia Tech Research Scanner', 'Dutch Institute for Vulnerability Disclosure', 'ProbeTheNet', 'FindMalware', 'ExposureMonitoring', 'Knoq', 'Natlas', 'LTX71', 'IPIP.NET', 'Lo-Sec', 'Kudelski', 'Mandiant', 'Majestic', 'Moz Dot', 'Palo Alto Networks', 'Mail.Ru', 'FH Muenster University', 'Ionos', 'SBA Research', 'GDNplus']))
+def categorize(row):
+    if row['abuseConfidenceScore'] == 0 or any(s2 in row.get('domain', default='no_domain').casefold() for s2 in greynoise_list) or any(s2 in row.get('isp', default='no_isp').casefold() for s2 in greynoise_list) or any(s2 in ','.join(map(str.casefold, row.get('hostnames',default=['no_hostnames']))) for s2 in greynoise_list):
+        return('benign')
+    elif row['abuseConfidenceScore'] == 100:
+        return('malicious')
+    else:
+        return('grey')
+
+enriched_unsolicited_5tuple_df['category'] = enriched_unsolicited_5tuple_df.apply(categorize, axis=1)
+enriched_unsolicited_5tuple_df['hour'] = pd.Series([t.floor(freq='h') for t in enriched_unsolicited_5tuple_df.ts])
+enriched_unsolicited_5tuple_df['day'] = pd.Series([t.floor(freq='d') for t in enriched_unsolicited_5tuple_df.ts])
+enriched_unsolicited_5tuple_df['min'] = pd.Series([t.floor(freq='min') for t in enriched_unsolicited_5tuple_df.ts])
+
+enriched_redirected_5tuple_df['category'] = enriched_redirected_5tuple_df.apply(categorize, axis=1)
+enriched_redirected_5tuple_df['hour'] = pd.Series([t.floor(freq='h') for t in enriched_redirected_5tuple_df.ts])
+enriched_redirected_5tuple_df['day'] = pd.Series([t.floor(freq='d') for t in enriched_redirected_5tuple_df.ts])
+enriched_redirected_5tuple_df['min'] = pd.Series([t.floor(freq='min') for t in enriched_redirected_5tuple_df.ts])
+
+
+# create list of common IP addresses between the baseline and redirect datasets
+common_ips = list(set(enriched_unsolicited_5tuple_df['id.orig_h']) & set(enriched_redirected_5tuple_df['id.orig_h']))
+common_ips.sort()
+
+# filter datasets for common IP addresses
+enriched_unsolicited_5tuple_common_df = enriched_unsolicited_5tuple_df[enriched_unsolicited_5tuple_df['id.orig_h'].isin(common_ips)]
+enriched_redirected_5tuple_common_df = enriched_redirected_5tuple_df[enriched_redirected_5tuple_df['id.orig_h'].isin(common_ips)]
+
+
+#
+# Create structures for analysis of signatures
+#
+#
+
+# create dataset for connection count variation
+rd_count = enriched_redirected_5tuple_common_df['id.orig_h'].value_counts()
+bl_count = enriched_unsolicited_5tuple_common_df['id.orig_h'].value_counts()
+bl_total_count = bl_count.sum().item()
+rd_total_count = rd_count.sum().item()
+joint_df = pd.DataFrame(common_ips,columns=['src_ip'])#.reset_index()
+joint_df['bl_count_raw'] = joint_df['src_ip'].map(lambda x: bl_count.get(x))
+joint_df['rd_count_raw'] = joint_df['src_ip'].map(lambda x: rd_count.get(x))
+joint_df['bl_count_percent'] = joint_df['src_ip'].map(lambda x: (bl_count.get(x)/bl_total_count)*100)
+joint_df['rd_count_percent'] = joint_df['src_ip'].map(lambda x: (rd_count.get(x)/rd_total_count)*100)
+joint_df['predictedRepScore'] = joint_df.apply(lambda x: abs(x['bl_count_percent']-x['rd_count_percent']), axis=1)
+joint_df['category'] = joint_df['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['category'].values[0])
+joint_df['abuseConfidenceScore'] = joint_df['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['abuseConfidenceScore'].values[0])
+joint_df['isp'] = joint_df['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['isp'].values[0])
+joint_df['domain'] = joint_df['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['domain'].values[0])
+joint_df['hostnames'] = joint_df['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['hostnames'].values[0])
+# filter half of structure
+joint_mal_df = joint_df[joint_df['predictedRepScore'] > .0026]
+
+# create dataset for 0-byte transport payloads (orig_byte in RD df)
+zerobytepayloaddf =enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['orig_bytes'] == 0]
+zerobytedf = pd.DataFrame()
+zerobytedf['src_ip']  = zerobytepayloaddf['id.orig_h'].unique()
+zerobytedf['category'] = zerobytedf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['category'].values[0])
+zerobytedf['abuseConfidenceScore'] = zerobytedf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['abuseConfidenceScore'].values[0])
+zerobytedf['domain'] = zerobytedf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['domain'].values[0])
+zerobytedf['isp'] = zerobytedf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['isp'].values[0])
+zerobytedf['hostnames'] = zerobytedf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['hostnames'].values[0])
+
+# create dataset for excessive port scanning
+# Many different ports (count of unique id.resp_p > 1 for both BL and RD)
+bl_manydestportsdf = pd.DataFrame()
+bl_manydestportsdf['src_ip'] = enriched_unsolicited_5tuple_common_df['id.orig_h'].unique()
+bl_manydestportsdf['dport_count'] = bl_manydestportsdf['src_ip'].map(lambda x: len(enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['id.resp_p'].value_counts()))
+bl_manydestportsdf = bl_manydestportsdf[bl_manydestportsdf['dport_count'] >1]
+bl_manydestportsdf['category'] = bl_manydestportsdf['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['category'].values[0])
+bl_manydestportsdf['abuseConfidenceScore'] = bl_manydestportsdf['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['abuseConfidenceScore'].values[0])
+bl_manydestportsdf['domain'] = bl_manydestportsdf['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['domain'].values[0])
+bl_manydestportsdf['isp'] = bl_manydestportsdf['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['isp'].values[0])
+bl_manydestportsdf['hostnames'] = bl_manydestportsdf['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['hostnames'].values[0])
+rd_manydestportsdf = pd.DataFrame()
+rd_manydestportsdf['src_ip'] = enriched_redirected_5tuple_common_df['id.orig_h'].unique()
+rd_manydestportsdf['dport_count'] = rd_manydestportsdf['src_ip'].map(lambda x: len(enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['id.resp_p'].value_counts()))
+rd_manydestportsdf = rd_manydestportsdf[rd_manydestportsdf['dport_count'] >1]
+rd_manydestportsdf['category'] = rd_manydestportsdf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['category'].values[0])
+rd_manydestportsdf['abuseConfidenceScore'] = rd_manydestportsdf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['abuseConfidenceScore'].values[0])
+rd_manydestportsdf['domain'] = rd_manydestportsdf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['domain'].values[0])
+rd_manydestportsdf['isp'] = rd_manydestportsdf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['isp'].values[0])
+rd_manydestportsdf['hostnames'] = rd_manydestportsdf['src_ip'].map(lambda x: enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['id.orig_h'] == x]['hostnames'].values[0])
+
+# create dataset for RST flag presence
+# connection resets (history has 'R' in RD df)
+origresetdf = enriched_redirected_5tuple_common_df[enriched_redirected_5tuple_common_df['history'].str.contains('R', na=False)]
+origresetdf = origresetdf.drop_duplicates(subset=['id.orig_h', 'category', 'abuseConfidenceScore', 'isp','domain'])[['id.orig_h', 'category', 'abuseConfidenceScore', 'isp','domain','hostnames']]
+origresetdf.rename(columns={'id.orig_h':'src_ip', 'abuseConfidenceScore':'original abuse score'}, inplace=True)
+
+# create dataset for presence of all signatures
+#   Common IPs between 4 scenarios
+common_ips_4scenarios = list(set(joint_df['src_ip']) & set(origresetdf['src_ip']) & set(zerobytedf['src_ip']) & set(rd_manydestportsdf['src_ip']) & set(joint_mal_df['src_ip']))
+common_ips_4scenarios.sort()
+scenario_comparison = pd.DataFrame(common_ips_4scenarios, columns=['src_ip'])
+scenario_comparison['category'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['category'].values[0])
+scenario_comparison['original abuse score'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['abuseConfidenceScore'].values[0])
+scenario_comparison['isp'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['isp'].values[0])
+scenario_comparison['domain'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['domain'].values[0])
+scenario_comparison['hostnames'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['hostnames'].values[0])
+
+# create dataset for presence of no signatures
+#   Common IPs between none of the scenarios
+uncommon_ips_4scenarios = list(set(joint_df['src_ip']) - (set(joint_df['src_ip']) & set(origresetdf['src_ip']) & set(zerobytedf['src_ip']) & set(rd_manydestportsdf['src_ip']) & set(joint_mal_df['src_ip'])))
+uncommon_ips_4scenarios.sort()
+scenario_difference = pd.DataFrame(uncommon_ips_4scenarios, columns=['src_ip'])
+scenario_difference['category'] = scenario_difference['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['category'].values[0])
+scenario_difference['original abuse score'] = scenario_difference['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['abuseConfidenceScore'].values[0])
+scenario_difference['isp'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['isp'].values[0])
+scenario_difference['domain'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['domain'].values[0])
+scenario_difference['hostnames'] = scenario_comparison['src_ip'].map(lambda x: enriched_unsolicited_5tuple_common_df[enriched_unsolicited_5tuple_common_df['id.orig_h'] == x]['hostnames'].values[0])
+scenario_difference['hostnames'] = scenario_difference['hostnames'].apply(lambda d: d if isinstance(d, list) else [])
+scenario_difference['domain'] = scenario_difference['domain'].apply(lambda d: d if isinstance(d, str) else '')
+scenario_difference['isp'] = scenario_difference['isp'].apply(lambda d: d if isinstance(d, str) else '')
+
+# Produce stacked bar graph of all signatures (agree and not agree)
+cat_colors = {'agree':'red', 'disagree':'#758467'}
+
+# 1st combine the dataframes
+scenario_comparison['sig'] = 'All Signatures'
+scenario_difference['sig'] = 'No Signatures'
+zerobytedf['sig']= 'Zero-Byte Transport Payloads'
+bl_manydestportsdf['sig'] = 'Excessive Port Scanning (Baseline)'
+rd_manydestportsdf['sig'] = 'Excessive Port Scanning (Redirection)'
+origresetdf['sig'] = 'RST Flag Presence'
+joint_mal_df['sig'] = 'Connection Count Disparity'
+combined_df = pd.concat([zerobytedf[['sig', 'category']], bl_manydestportsdf[['sig', 'category']], rd_manydestportsdf[['sig', 'category']], origresetdf[['sig', 'category']], joint_mal_df[['sig', 'category']], scenario_comparison[['sig', 'category']]])
+combined_df.loc[combined_df['category'] != 'malicious', 'category'] = 'disagree'
+combined_df.loc[combined_df['category'] == 'malicious', 'category'] = 'agree'
+combined_group = combined_df.groupby(['sig','category']).size().reset_index(name='count')
+combined_group['percentage'] = combined_df.groupby(['sig', 'category']).size().groupby(level=0).apply(lambda x: 100 * x / float(x.sum())).values
+combined_group_fig = px.bar(combined_group, 'sig', 'count', color='category', hover_data='count',labels={'sig':'Signatures','count':'IP Address Count','category':'Original Categorization'},text=combined_group['percentage'].apply(lambda x: '{0:1.2f}%'.format(x)), title='Signature by Original Categorization',color_discrete_map=cat_colors, height=1000)
+combined_group_fig.update_traces(textposition='inside', textfont_size=22)
+combined_group_fig.write_html(r'combined_group_fig.html')
+
+none_comp = scenario_difference.groupby(['sig','category']).size().reset_index(name='count')
+none_comp['percentage'] = scenario_difference.groupby(['sig', 'category']).size().groupby(level=0).apply(lambda x: 100 * x / float(x.sum())).values
+none_comp_fig = px.bar(none_comp, 'sig','count', color='category',labels={'sig':'Signatures','count':'IP Address Count','category':'Original Categorization'},text=none_comp['percentage'].apply(lambda x: '{0:1.2f}%'.format(x)), title='Original Categorization Distribution of IP addresses (No Signature Match)',color_discrete_map=cat_colors_orig)
+none_comp_fig.update_traces(textposition='inside', textfont_size=32)
+none_comp_fig.write_html(r'none_comp_fig.html')
+
+
+
+# Produce stacked bar graph of all signatures (agree and not agree) GREYNOISE FILTERED
+cat_colors = {'agree':'red', 'disagree':'#758467'}
+greynoise_list = list(map(str.casefold,['QuadMetrics', 'Academy for Internet Research', 'ESET', 'RWTH', 'Net Systems Research', 'TurnitinBot', 'Qualys', 'Onyphe', 'IPinfo.io', 'Intrinsec', 'Babbar', 'University of Colorado', 'Open Port Statistics', 'CyberResilience', 'SOCRadar', 'Shodan.io', 'Twitter', 'GPTBot', 'A10 Networks', 'FortifyData', 'BitSight', 'SEMrush', 'DataForSEO ', 'University of California San Diego', 'BinaryEdge.io', 'Detectify', 'University of California Berkeley', 'Inter-University Computation Center', 'Netsecscan', 'Errata Security', 'Stanford University', 'Cortex Xpanse', 'Driftnet', 'Applebot', 'National Cyber Security Centre', 'Caida', 'OpenIntel.nl', 'Security-Research.org', 'SecurityTrails', 'Bytedance', 'Neeva', 'facebook.com', 'Arbor Networks', 'Cambridge Cybercrime Centre', 'Shadowserver ', 'Censys', 'Sogou', 'ServCity', 'Cymru', 'Brandwatch', 'CERT-FR', 'Common Crawl', 'Domainstats', 'CISA ', 'NEKST', 'SEOkicks ', 'DataGrid Surface', 'CyberGreen', 'Alpha Strike Labs', 'Cloud System Networks', 'Pinterest ', 'AWS Security', 'CriminalIP', 'Sharashka', 'AdScore', 'Dataprovider.com', 'fofa.so', 'Ruhr-Universitat Bochum', 'FireEye', 'ANT Lab', 'DomainTools', 'BLEXBot ', 'Rapid7', 'Ampere Innotech', 'CrowdStrike', 'Project25499 ', 'NetCraft', 'University of the Free State', 'Archive.org', 'bufferover.run', 'Qwant', 'Technical University of Munich', 'VeriSign', 'University of Michigan', 'Ahrefs', 'Bit Discovery', 'Rackspace', 'Phenome.ca', 'research-scanner.com', 'Brown University', 'Malware Patrol', 'Georgia Tech Research Scanner', 'Dutch Institute for Vulnerability Disclosure', 'ProbeTheNet', 'FindMalware', 'ExposureMonitoring', 'Knoq', 'Natlas', 'LTX71', 'IPIP.NET', 'Lo-Sec', 'Kudelski', 'Mandiant', 'Majestic', 'Moz Dot', 'Palo Alto Networks', 'Mail.Ru', 'FH Muenster University', 'Ionos', 'SBA Research', 'GDNplus']))
+def categorize(row):
+    if any(s2 in row.get('domain', default='no_domain').casefold() for s2 in greynoise_list) or any(s2 in row.get('isp', default='no_isp').casefold() for s2 in greynoise_list) or any(s2 in ','.join(map(str.casefold, row.get('hostnames',default=['no_hostnames']))) for s2 in greynoise_list):
+        return(False)
+    else:
+        return(True)
+
+# 1st combine the dataframes
+scenario_comparison['sig'] = 'All Signatures'
+scenario_difference['sig'] = 'No Signatures'
+zerobytedf['sig']= 'Zero-Byte Transport Payloads'
+bl_manydestportsdf['sig'] = 'Excessive Port Scanning (Baseline)'
+rd_manydestportsdf['sig'] = 'Excessive Port Scanning (Redirection)'
+origresetdf['sig'] = 'RST Flag Presence'
+joint_mal_df['sig'] = 'Connection Count Disparity'
+combined_filt_df = pd.concat([zerobytedf[['sig', 'category', 'domain', 'isp', 'hostnames']], bl_manydestportsdf[['sig', 'category', 'domain', 'isp', 'hostnames']], rd_manydestportsdf[['sig', 'category', 'domain', 'isp', 'hostnames']], origresetdf[['sig', 'category', 'domain', 'isp', 'hostnames']], joint_mal_df[['sig', 'category', 'domain', 'isp', 'hostnames']], scenario_comparison[['sig', 'category', 'domain', 'isp', 'hostnames']]])
+combined_filt_df.loc[combined_filt_df['category'] != 'malicious', 'category'] = 'disagree'
+combined_filt_df.loc[combined_filt_df['category'] == 'malicious', 'category'] = 'agree'
+combined_filt_group = combined_filt_df.loc[combined_filt_df.apply(categorize, axis=1)].groupby(['sig','category']).size().reset_index(name='count')
+combined_filt_group['percentage'] = combined_filt_df.loc[combined_filt_df.apply(categorize, axis=1)].groupby(['sig', 'category']).size().groupby(level=0).apply(lambda x: 100 * x / float(x.sum())).values
+combined_group_filt_fig = px.bar(combined_filt_group, 'sig', 'count', color='category', hover_data='count',labels={'sig':'Signatures','count':'IP Address Count','category':'Original Categorization','zerobyte':'Zero-Byte Transport Payloads', 'reset':'RST Flag Presence'},text=combined_filt_group['percentage'].apply(lambda x: '{0:1.2f}%'.format(x)), title='Signature by Original Categorization', subtitle='Greynoise Filtered',color_discrete_map=cat_colors, height=1500)
+combined_group_filt_fig.update_traces(textposition='inside', textfont_size=32)
+combined_group_filt_fig.write_html(r'combined_group_filt_fig.html')
+
+none_comp_filt = scenario_difference.loc[scenario_difference.apply(categorize, axis=1)].groupby(['sig','category']).size().reset_index(name='count')
+none_comp_filt['percentage'] = scenario_difference.loc[scenario_difference.apply(categorize, axis=1)].groupby(['sig', 'category']).size().groupby(level=0).apply(lambda x: 100 * x / float(x.sum())).values
+none_comp_filt_fig = px.bar(none_comp_filt, 'sig','count', color='category',labels={'sig':'Signatures','count':'IP Address Count','category':'Original Categorization'},text=none_comp_filt['percentage'].apply(lambda x: '{0:1.2f}%'.format(x)), title='Original Categorization Distribution of IP addresses (No Signature Match)', subtitle='Greynoise Filtered',color_discrete_map=cat_colors_orig, height=1000)
+none_comp_filt_fig.update_traces(textposition='inside', textfont_size=32)
+none_comp_filt_fig.write_html(r'none_comp_filt_fig.html')
