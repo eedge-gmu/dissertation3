@@ -1,6 +1,6 @@
 # dissertation3
 
-The datasets contain 19 columns of information.
+The datasets consist of 19 columns (in parentheses):
 
 - timestamp (ts)
 - originator IP address (id.orig_h)
